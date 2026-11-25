@@ -211,9 +211,20 @@ def install_or_upgrade():
     version = release["tag_name"][1:]
     node = read_node()
     pending = json.loads(PENDING.read_text()) if PENDING.exists() else None
-    if not node and not pending and (current or MITA_CONFIG.exists()):
-        raise ValueError("发现已有 mita 配置，请用原管理方式维护")
+    orphaned_config = not node and not pending and not current and MITA_CONFIG.is_file()
+    if not node and not pending and (current or MITA_CONFIG.exists()) and not orphaned_config:
+        raise ValueError("发现由其他方式管理的 mita，请用原管理方式维护")
+    if orphaned_config:
+        print(f"发现卸载后留下的配置 {MITA_CONFIG}。继续会先备份，再创建新节点。")
+        if input("输入 YES 确认替换旧配置，回车取消：").strip() != "YES":
+            print("已取消安装。")
+            return
     node = pending or node or prompt_node(None)
+    if orphaned_config:
+        with tempfile.NamedTemporaryFile(dir=STATE, prefix="old-server-", suffix=".conf.pb", delete=False) as backup:
+            with MITA_CONFIG.open("rb") as old_config:
+                shutil.copyfileobj(old_config, backup)
+        print(f"旧配置已备份至 {backup.name}", flush=True)
     if current and tuple(map(int, current.split("."))) > tuple(map(int, version.split("."))):
         raise ValueError(f"已装 {current} 比上游正式版 {version} 更新")
     if not NODE.exists() and not pending:
