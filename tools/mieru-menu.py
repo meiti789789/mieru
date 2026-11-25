@@ -16,7 +16,6 @@ import subprocess
 import tempfile
 import time
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
 
 UPSTREAM = "enfein/mieru"
 STATE = Path("/var/lib/mieru-menu")
@@ -30,13 +29,17 @@ def run(*args):
     subprocess.run(args, check=True)
 
 
-def fetch(url):
-    return urlopen(Request(url, headers={"User-Agent": "mieru-menu"}), timeout=15)
-
-
 def latest():
-    with fetch(f"https://api.github.com/repos/{UPSTREAM}/releases/latest") as response:
-        release = json.load(response)
+    print("正在查询 GitHub 官方最新版（最多 15 秒）…", flush=True)
+    url = f"https://api.github.com/repos/{UPSTREAM}/releases/latest"
+    try:
+        output = subprocess.check_output([
+            "curl", "--fail", "--silent", "--show-error", "--connect-timeout", "8",
+            "--max-time", "15", "--user-agent", "mieru-menu", url,
+        ])
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"无法查询 api.github.com（curl 错误 {error.returncode}）") from error
+    release = json.loads(output)
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", release["tag_name"]):
         raise ValueError("上游版本格式有变")
     return release
@@ -72,13 +75,20 @@ def package(release):
     url = f"https://github.com/{UPSTREAM}/releases/download/{release['tag_name']}/{name}"
     with tempfile.TemporaryDirectory(dir=STATE) as directory:
         path = Path(directory) / name
+        print(f"正在下载官方安装包 {name}（最多 120 秒）…", flush=True)
+        try:
+            run("curl", "--fail", "--show-error", "--location", "--progress-bar",
+                "--connect-timeout", "8", "--max-time", "120", "--output", str(path), url)
+        except subprocess.CalledProcessError as error:
+            raise ValueError(f"无法下载 GitHub Release 安装包（curl 错误 {error.returncode}）") from error
+        print("正在校验 SHA-256…", flush=True)
         digest = hashlib.sha256()
-        with fetch(url) as response, path.open("wb") as output:
-            for block in iter(lambda: response.read(1024 * 1024), b""):
+        with path.open("rb") as package_file:
+            for block in iter(lambda: package_file.read(1024 * 1024), b""):
                 digest.update(block)
-                output.write(block)
         if assets[name].get("digest") != "sha256:" + digest.hexdigest():
             raise ValueError("安装包 SHA-256 校验失败或官方未提供校验值")
+        print("正在安装已校验的软件包…", flush=True)
         run(*command, str(path))
 
 
@@ -134,11 +144,13 @@ def wait_status(expected=None):
 
 
 def restart():
+    print("正在重启 mita 并检查运行状态…", flush=True)
     run("systemctl", "restart", "mita")
     wait_status('"RUNNING"')
 
 
 def configure(node):
+    print("正在写入节点配置…", flush=True)
     previous = read_node()
     with tempfile.TemporaryDirectory(dir=STATE) as directory:
         path = Path(directory) / "server.json"
@@ -207,7 +219,6 @@ def install_or_upgrade():
     if not NODE.exists() and not pending:
         save(PENDING, node)
     if current != version:
-        print(f"正在安装官方 {release['tag_name']}")
         package(release)
     if pending or not NODE.exists() or current is None:
         configure(node)
