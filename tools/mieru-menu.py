@@ -215,8 +215,8 @@ def install_or_upgrade():
     if not node and not pending and (current or MITA_CONFIG.exists()) and not orphaned_config:
         raise ValueError("发现由其他方式管理的 mita，请用原管理方式维护")
     if orphaned_config:
-        print(f"发现卸载后留下的配置 {MITA_CONFIG}。继续会先备份，再创建新节点。")
-        if input("输入 YES 确认替换旧配置，回车取消：").strip() != "YES":
+        print(f"发现遗留配置 {MITA_CONFIG}。继续会先备份，再创建新节点。")
+        if input("输入 yes 确认替换旧配置，回车取消：").strip().lower() != "yes":
             print("已取消安装。")
             return
     node = pending or node or prompt_node(None)
@@ -241,11 +241,31 @@ def install_or_upgrade():
 
 
 def uninstall():
-    if input("卸载 mita？菜单保存的节点信息将保留 [y/N] ").strip().lower() == "y":
-        if shutil.which("dpkg"):
-            run("dpkg", "-r", "mita")
-        else:
-            run("rpm", "-e", "mita")
+    if shutil.which("dpkg"):
+        query = ["dpkg-query", "-W", "-f=${db:Status-Status}", "mita"]
+        remove = ["dpkg", "-r", "mita"]
+        result = subprocess.run(query, capture_output=True, text=True)
+        present = result.returncode == 0 and result.stdout.strip() not in {"config-files", "not-installed"}
+    elif shutil.which("rpm"):
+        result = subprocess.run(["rpm", "-q", "mita"], capture_output=True)
+        present = result.returncode == 0
+        remove = ["rpm", "-e", "mita"]
+    else:
+        raise ValueError("需要 dpkg 或 rpm")
+
+    if present:
+        if input("卸载 mita 并保留节点配置？[y/N] ").strip().lower() not in {"y", "yes"}:
+            print("已取消卸载。")
+            return
+        run(*remove)
+        print("mita 已卸载。")
+    elif installed():
+        raise ValueError("检测到手动安装的 mita，请通过原安装方式卸载")
+    else:
+        print("mita 软件包已不在系统中。")
+
+    if MITA_CONFIG.exists():
+        print(f"旧配置仍保留在 {MITA_CONFIG}。如需新建节点，选 1 并按提示确认备份。")
 
 
 def menu():
